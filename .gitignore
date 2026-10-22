@@ -1,0 +1,14 @@
+# Entornos virtuales y caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Archivos de base de datos local generados por ejecución
+*.db
+*.sqlite3
+
+# Archivos transaccionales de prueba generados
+data/raw/*.csv
+data/rejected/*.csv
