@@ -1,6 +1,7 @@
 # Automated ETL Pipeline with Data Quality & Observability
 
-![CI Data Quality Pipeline](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
+
 
 Pipeline ETL automatizado desarrollado en Python y SQL enfocado en ingesta controlada, validación estricta de calidad de datos (Data Quality), observabilidad de lotes y segregación de anomalías mediante colas de cuarentena (Dead Letter Queue).
 
