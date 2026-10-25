@@ -5,6 +5,9 @@ from datetime import datetime
 from src.database import init_database, load_valid_records, log_pipeline_run
 from src.quality import DataQualityEngine
 
+# Umbral de calidad según SLA de producción (mínimo 90% de aprobación)
+SLA_PASS_RATE_THRESHOLD = 90.0
+
 def run_pipeline():
     print("=" * 60)
     print("INICIANDO PIPELINE ETL CON CONTROL DE CALIDAD Y AUDITORÍA")
@@ -47,16 +50,15 @@ def run_pipeline():
     print("[5/5] Cargando registros aprobados a la base de datos...")
     load_valid_records(df_valid)
 
-    # Determinamos el estado del pipeline según el umbral de calidad (SLA)
-    # Por ejemplo: Si el pass rate es menor a 50%, lo marcamos como WARNING
-    run_status = "SUCCESS" if metrics["pass_rate_percentage"] >= 50.0 else "WARNING_LOW_QUALITY"
+    # Evaluación de SLA: se emite alerta si no alcanza el umbral definido
+    run_status = "SUCCESS" if metrics["pass_rate_percentage"] >= SLA_PASS_RATE_THRESHOLD else "WARNING_LOW_QUALITY"
     
     log_pipeline_run(
         pipeline_name="daily_transactions_ingestion",
         metrics=metrics,
         status=run_status
     )
-    print("      Auditoría registrada exitosamente en tabla 'etl_audit_logs'.")
+    print(f"      Auditoría registrada en 'etl_audit_logs' con estado: {run_status}")
 
     print("\n" + "=" * 60)
     print(f"PIPELINE FINALIZADO CON ESTADO: {run_status}")
