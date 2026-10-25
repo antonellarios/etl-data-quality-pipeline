@@ -27,7 +27,7 @@ jobs:
           pip install pytest
 
       - name: Ejecutar pruebas
-        run: pytest -v
+        run: python -m pytest -v
 
       - name: Generar datos y ejecutar el pipeline
         run: |
