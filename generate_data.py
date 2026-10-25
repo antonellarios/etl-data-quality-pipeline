@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 
@@ -12,15 +13,20 @@ def generate_mock_transactions():
         {"transaction_id": "TXN_1005", "customer_id": "CUST_05", "transaction_date": "2026-10-21", "amount": 1200.00, "status": "CANCELLED"},
         
         # Errores intencionales para evaluar Data Quality
-        {"transaction_id": None, "customer_id": "CUST_06", "transaction_date": "2026-10-21", "amount": 5400.00, "status": "COMPLETED"},          # ID NULO
-        {"transaction_id": "TXN_1002", "customer_id": "CUST_07", "transaction_date": "2026-10-21", "amount": 9900.00, "status": "COMPLETED"},       # ID DUPLICADO
-        {"transaction_id": "TXN_1008", "customer_id": "CUST_08", "transaction_date": "2026-10-21", "amount": -350.00, "status": "COMPLETED"},       # MONTO NEGATIVO
-        {"transaction_id": "TXN_1009", "customer_id": None, "transaction_date": "2026-10-21", "amount": 12000.00, "status": "COMPLETED"},           # CLIENTE NULO
-        {"transaction_id": "TXN_1010", "customer_id": "CUST_10", "transaction_date": "2026-10-21", "amount": 7600.00, "status": "FAILED_UNKNOWN"}   # ESTADO INVALIDO
+        {"transaction_id": None, "customer_id": "CUST_06", "transaction_date": "2026-10-21", "amount": 5400.00, "status": "COMPLETED"},
+        {"transaction_id": "TXN_1002", "customer_id": "CUST_07", "transaction_date": "2026-10-21", "amount": 9900.00, "status": "COMPLETED"},
+        {"transaction_id": "TXN_1008", "customer_id": "CUST_08", "transaction_date": "2026-10-21", "amount": -350.00, "status": "COMPLETED"},
+        {"transaction_id": "TXN_1009", "customer_id": None, "transaction_date": "2026-10-21", "amount": 12000.00, "status": "COMPLETED"},
+        {"transaction_id": "TXN_1010", "customer_id": "CUST_10", "transaction_date": "2026-10-21", "amount": 7600.00, "status": "FAILED_UNKNOWN"}
     ]
 
     df = pd.DataFrame(data)
-    output_path = "data/raw/transactions_raw.csv"
+    
+    # Garantizar la existencia del directorio antes de escribir
+    output_dir = "data/raw"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    output_path = os.path.join(output_dir, "transactions_raw.csv")
     df.to_csv(output_path, index=False)
     print(f"Archivo generado exitosamente en: {output_path} ({len(df)} registros totales)")
 

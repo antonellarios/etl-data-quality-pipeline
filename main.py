@@ -5,7 +5,6 @@ from datetime import datetime
 from src.database import init_database, load_valid_records, log_pipeline_run
 from src.quality import DataQualityEngine
 
-# Umbral de calidad según SLA de producción (mínimo 90% de aprobación)
 SLA_PASS_RATE_THRESHOLD = 90.0
 
 def run_pipeline():
@@ -37,8 +36,11 @@ def run_pipeline():
     print(f"      Tasa de aprobación (Pass Rate): {metrics['pass_rate_percentage']}%")
 
     # 4. Manejo de Datos Rechazados (Dead Letter Queue / Quarantine)
+    rejected_dir = "data/rejected"
+    os.makedirs(rejected_dir, exist_ok=True)
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    rejected_output_path = f"data/rejected/quarantine_transactions_{timestamp}.csv"
+    rejected_output_path = os.path.join(rejected_dir, f"quarantine_transactions_{timestamp}.csv")
     
     if not df_rejected.empty:
         df_rejected.to_csv(rejected_output_path, index=False)
@@ -50,7 +52,6 @@ def run_pipeline():
     print("[5/5] Cargando registros aprobados a la base de datos...")
     load_valid_records(df_valid)
 
-    # Evaluación de SLA: se emite alerta si no alcanza el umbral definido
     run_status = "SUCCESS" if metrics["pass_rate_percentage"] >= SLA_PASS_RATE_THRESHOLD else "WARNING_LOW_QUALITY"
     
     log_pipeline_run(
