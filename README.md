@@ -1,157 +1,163 @@
-# Automated ETL Pipeline with Data Quality & Observability
+# Data Quality ETL Pipeline
 
-Pipeline ETL desarrollado en Python para ingerir datos transaccionales, validar su calidad antes de cargarlos en una base de datos relacional y registrar los resultados de cada ejecución. Los registros que no cumplen las reglas se aíslan en una cuarentena (*dead-letter queue*) junto con sus motivos de rechazo.
+Pipeline ETL por lotes desarrollado en **Python** para validar registros transaccionales antes de su persistencia en una base de datos relacional. Los registros que incumplen las reglas de negocio se aíslan en una tabla de cuarentena (*Dead Letter Queue*) junto con su código de rechazo, mientras que cada ejecución queda trazada en una tabla de auditoría.
 
-[![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
+---
 
-## Objetivo
+## 📌 Por qué existe
 
-Demostrar un flujo ETL defensivo y reproducible: detectar problemas de calidad antes de la carga, conservar los datos rechazados para su análisis y dejar trazabilidad de cada lote procesado.
+Los datos corruptos suelen llegar a los tableros y reportes operativos de forma silenciosa. Este pipeline intercepta los registros inválidos en la etapa de transformación, los resguarda para su posterior remediación y genera un registro auditable y reproducible de cada lote procesado.
 
-## Arquitectura y flujo de datos
+---
 
-    Fuente CSV/JSON o datos de prueba
-                    │
-                    ▼
-              Extracción
-                    │
-                    ▼
-       Validaciones de calidad ───────► Cuarentena / registros rechazados
-                    │                   con motivos de rechazo
-            Registros aprobados
-                    │
-                    ▼
-           Base de datos relacional
-                    │
-                    ▼
-           Tabla de auditoría del lote
+## 🏗️ Arquitectura y Flujo de Datos
 
-1. **Extract:** obtiene registros de entrada desde archivos o datos de prueba.
-2. **Transform & quality gates:** aplica reglas de integridad y negocio antes de cargar.
-3. **Quarantine:** aparta los registros inválidos y conserva el motivo del rechazo.
-4. **Load & audit:** carga los registros aprobados y registra métricas de ejecución.
+```mermaid
+flowchart TD
+    A[Fuente: CSV / Datos Sintéticos] --> B[Extracción]
+    B --> C[Quality Gates: Reglas vectorizadas en Pandas]
+    C -->|Registros Aprobados| D[(Base de Datos Relacional - SQLite / SQLAlchemy)]
+    C -->|Registros Rechazados + Código| E[(Tabla de Cuarentena)]
+    D -.-> F[(Tabla de Auditoría de Lotes: etl_audit_logs)]
+```
 
-> Este repositorio utiliza datos sintéticos; no representa una integración activa con una API externa, salvo que se añada explícitamente una fuente de ese tipo.
+| Etapa | Responsabilidad Técnica |
+| :--- | :--- |
+| **Extracción** | Lectura de registros crudos desde archivos locales o mediante el generador sintético integrado. |
+| **Quality Gates** | Evaluación estricta de reglas de integridad, completitud, consistencia y validez mediante máscaras booleanas. |
+| **Cuarentena** | Segregación y persistencia de filas no válidas junto con su respectivo código de motivo de rechazo. |
+| **Carga & Auditoría** | Inserción de registros aprobados y escritura de métricas de telemetría en `etl_audit_logs`. |
 
-## Reglas de calidad
+---
 
-| Dimensión | Campo | Regla | Acción | Motivo registrado |
-|---|---|---|---|---|
-| Integridad | `transaction_id` | Obligatorio y único | Cuarentena | `ID_NULO` / `ID_DUPLICADO` |
-| Completitud | `customer_id` | Obligatorio | Cuarentena | `CLIENTE_FALTANTE` |
-| Consistencia | `amount` | Numérico y mayor que 0 | Cuarentena | `MONTO_INVALIDO` |
-| Validez | `status` | Debe ser `COMPLETED`, `PENDING` o `CANCELLED` | Cuarentena | `ESTADO_NO_PERMITIDO` |
+## 📋 Reglas de Calidad de Datos (Quality Gates)
 
-## Umbral, alertas y datos de prueba
+| Dimensión | Campo | Regla / Condición | Acción | Código de Rechazo |
+| :--- | :--- | :--- | :--- | :--- |
+| **Integridad** | `transaction_id` | Obligatorio y único (`IS NOT NULL & UNIQUE`) | Cuarentena | `ID_NULO` / `ID_DUPLICADO` |
+| **Completitud** | `customer_id` | Obligatorio (`IS NOT NULL`) | Cuarentena | `CLIENTE_FALTANTE` |
+| **Consistencia** | `amount` | Valor numérico mayor a cero (`amount > 0`) | Cuarentena | `MONTO_INVALIDO` |
+| **Validez** | `status` | Pertenecer a `{'COMPLETED', 'PENDING', 'CANCELLED'}` | Cuarentena | `ESTADO_NO_PERMITIDO` |
 
-El umbral de aprobación configurado es **90% por lote**. Si la tasa de aprobación queda por debajo de ese valor, el pipeline registra el estado `WARNING_LOW_QUALITY` en la auditoría y conserva los registros inválidos en cuarentena, en vez de detener necesariamente todo el proceso.
+> **Manejo de duplicados:** Se aíslan en cuarentena todas las ocurrencias repetidas que violan la unicidad del identificador primario.
 
-`generate_data.py` crea datos sintéticos con anomalías intencionales para probar las validaciones y el flujo de cuarentena. La proporción concreta de registros aprobados puede depender de los datos generados. La ejecución documentada abajo es un ejemplo, no una garantía de que todas las corridas produzcan exactamente los mismos conteos.
+---
 
-## Evidencia de ejecución
+## ⚙️ Umbrales de Calidad y Alertas
 
-Ejemplo de una corrida registrada en `etl_audit_logs`:
+* **Umbral de aprobación (SLA):** 90% de registros válidos por lote.
+* **Manejo de lotes observados:** Si la tasa de aprobación (*pass rate*) cae por debajo del 90%, el lote se etiqueta con el estado `WARNING_LOW_QUALITY` en la tabla de auditoría. Los registros aprobados se insertan normalmente para no bloquear transacciones válidas, mientras que los registros erróneos permanecen en cuarentena para remediación.
+* **Observabilidad:** El estado de la ejecución se imprime en la consola de comandos y se persiste de manera transaccional en `etl_audit_logs` (sin alertas externas configuradas en esta fase).
 
-| `run_id` | `pipeline_name` | `total_processed` | `valid_loaded` | `rejected_count` | `pass_rate_pct` | `status` |
-|---:|---|---:|---:|---:|---:|---|
-| 1 | `daily_transactions_ingestion` | 10 | 4 | 6 | 40.0 | `WARNING_LOW_QUALITY` |
+---
 
-En este ejemplo, 4 de 10 registros fueron aprobados (40%), por debajo del umbral configurado de 90%; los otros 6 fueron rechazados y el lote quedó marcado con advertencia.
+## 📊 Evidencia de Ejecución
 
-### Capturas
+Ejemplo de una corrida persistida en la tabla `etl_audit_logs`:
 
+| run_id | pipeline_name | total_processed | valid_loaded | rejected_count | pass_rate_pct | status |
+| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
+| `1` | `daily_transactions_ingestion` | 10 | 4 | 6 | 40.0% | `WARNING_LOW_QUALITY` |
 
-![Salida de consola de una ejecución del pipeline](assets/console.png)
+*Nota: Los valores exactos pueden variar según las semillas del script sintético `generate_data.py`.*
 
-![Filas registradas en la tabla de auditoría etl_audit_logs](assets/audit_logs.png)
+---
 
-## Pruebas automatizadas
+## 🧪 Pruebas Automatizadas (pytest)
 
-Las pruebas se ejecutan con `pytest` y cubren cuatro escenarios:
+La suite de pruebas unitarias implementada en `tests/` cubre de forma aislada los siguientes escenarios:
 
-- `test_valid_record_passes`: un registro válido pasa las reglas.
-- `test_null_or_duplicated_transaction_id`: detecta identificadores nulos o duplicados.
-- `test_invalid_amount`: rechaza montos negativos o iguales a cero.
-- `test_invalid_status_and_missing_customer`: detecta estados no permitidos y clientes faltantes.
+* `test_valid_record_passes`: Lotes íntegros con validación positiva de todas las reglas.
+* `test_null_or_duplicated_transaction_id`: Detección precisa de identificadores nulos y claves duplicadas.
+* `test_invalid_amount`: Filtrado estricto de valores iguales o inferiores a cero.
+* `test_invalid_status_and_missing_customer`: Validación de restricciones categóricas y ausencia de identificador de cliente.
 
-GitHub Actions ejecuta las pruebas automáticamente en los eventos configurados en `.github/workflows/ci.yml`. La insignia al inicio del README muestra el resultado más reciente del workflow.
+**Integración Continua:** GitHub Actions ejecuta automáticamente el pipeline de pruebas en cada `push` o `pull_request` bajo la configuración definida en `.github/workflows/ci.yml`.
 
-## Decisiones técnicas
+---
 
-- **Pandas vectorizado:** las reglas se aplican mediante operaciones sobre columnas y máscaras booleanas, evitando validar fila por fila en el flujo principal.
-- **SQLite y SQLAlchemy:** SQLite permite ejecutar el ejemplo localmente y en CI sin levantar un servidor de base de datos. SQLAlchemy proporciona una capa de acceso a datos.
-- **Escalabilidad:** este proyecto está pensado como demostración de procesamiento por lotes local. Para volúmenes que excedan la memoria disponible, habría que diseñar y probar una estrategia de procesamiento por particiones o una tecnología distribuida, como DuckDB o Spark, según el caso.
-- **Reintentos y recuperación:** los archivos en cuarentena sirven para inspeccionar y reprocesar registros rechazados. No se debe considerar que existe una política automática de reintentos de extracción salvo que esté implementada en el código.
+## 💡 Decisiones Técnicas
 
-## Tecnologías
+* **Procesamiento vectorizado con Pandas:** Las reglas de calidad se ejecutan a nivel de columnas mediante operadores lógicos vectorizados, evitando ciclos imperativos (`for` loops) para minimizar la latencia en memoria.
+* **Abstracción con SQLite y SQLAlchemy:** SQLite permite portabilidad total y ejecución instantánea en entornos de CI/CD sin aprovisionar infraestructura externa. SQLAlchemy desacopla el motor, permitiendo transicionar a PostgreSQL o Azure SQL modificando únicamente la cadena de conexión.
+* **Alcance y escalabilidad:** Diseñado para procesamiento local por lotes. Para cargas de datos que superen la capacidad de la memoria RAM disponible, la arquitectura modular permite migrar la lógica hacia DuckDB o Apache Spark.
+* **Remediación:** Los registros aislados en cuarentena mantienen su estado original y motivo de rechazo para permitir inspección manual o scripts de reprocesamiento.
 
-- Python
-- Pandas y NumPy
-- SQLAlchemy y SQLite
-- pytest
-- GitHub Actions
+---
 
-## Instalación y uso
+## 🛠️ Stack Tecnológico
 
-### Requisitos
+* **Lenguaje:** Python 3.10+
+* **Manipulación de Datos:** Pandas, NumPy
+* **Base de Datos & ORM:** SQLAlchemy, SQLite (compatible con PostgreSQL)
+* **Testing & CI/CD:** pytest, GitHub Actions
 
-- Git
-- Python 3.10 o superior, en una versión compatible con las dependencias del proyecto.
+---
 
-### Clonar el repositorio
+## 🚀 Instalación y Uso
 
-Windows PowerShell, macOS o Linux:
+### 1. Clonar el repositorio y configurar dependencias
+```bash
+git clone [https://github.com/antonellarios/etl-data-quality-pipeline.git](https://github.com/antonellarios/etl-data-quality-pipeline.git)
+cd etl-data-quality-pipeline
+```
 
-    git clone https://github.com/antonellarios/etl-data-quality-pipeline.git
-    cd etl-data-quality-pipeline
+* **En Linux / macOS:**
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  python3 -m pip install -r requirements.txt
+  ```
 
-### Instalar dependencias
+* **En Windows (PowerShell):**
+  ```powershell
+  py -m venv venv
+  .\venv\Scripts\Activate.ps1
+  py -m pip install -r requirements.txt
+  ```
 
-En Windows PowerShell:
+### 2. Ejecutar la suite de pruebas
+```bash
+pytest -v
+```
 
-    py -m pip install -r requirements.txt
+### 3. Generar datos sintéticos y ejecutar el pipeline
+```bash
+# Generación de datos con anomalías intencionales
+python generate_data.py
 
-En macOS o Linux:
+# Ejecución del pipeline ETL defensivo
+python main.py
 
-    python3 -m pip install -r requirements.txt
+# Verificación de datos persistidos y logs de auditoría
+python check_db.py
+```
 
-### Ejecutar las pruebas
+---
 
-En Windows PowerShell:
+## 🔐 Configuración y Seguridad
 
-    py -m pytest -v
+El repositorio incluye un archivo `.env.example` como referencia. Copie este archivo como `.env` únicamente si define variables personalizadas de conexión:
 
-En macOS o Linux:
+```bash
+cp .env.example .env
+```
 
-    python3 -m pytest -v
+*Nota de seguridad: Nunca suba credenciales sensibles, tokens o archivos `.env` al control de versiones.*
 
-### Generar datos y ejecutar el pipeline
+---
 
-En Windows PowerShell:
+## 🗺️ Roadmap de Mejoras
 
-    py generate_data.py
-    py main.py
-    py check_db.py
+1. Implementación de logging estructurado en formato JSON con contexto de ejecución.
+2. Carga atómica con transacciones ACID (rollback completo si falla la carga o la auditoría).
+3. Mecanismos de idempotencia para reprocesamiento seguro de lotes existentes.
+4. Ampliación de pruebas unitarias sobre límites de umbral y validación estricta de tipos.
+5. Validación y pruebas de integración con contenedores Docker para PostgreSQL.
 
-En macOS o Linux:
+---
 
-    python3 generate_data.py
-    python3 main.py
-    python3 check_db.py
+## 👤 Autoría
 
-`check_db.py` permite consultar los resultados persistidos, según la implementación actual del proyecto.
-
-## Configuración y seguridad
-
-El repositorio incluye `.env.example` como referencia de configuración. Copiarlo a `.env` solo es necesario si el código lee variables de entorno desde ese archivo. No subas credenciales, claves ni archivos `.env` con valores reales a GitHub. La base de datos configurada y las variables admitidas deben coincidir con lo que implementa el código.
-
-## Posibles mejoras
-
-- Añadir o ampliar casos de prueba para tipos incorrectos, umbrales y fallos de carga.
-- Incorporar capturas reales de la consola y de la tabla de auditoría.
-- Probar explícitamente una conexión a PostgreSQL antes de afirmar compatibilidad de producción.
-- Añadir alertas externas u orquestación programada si el alcance del proyecto lo requiere.
-
-## Autoría
-
-Proyecto personal de **Antonella Ríos**. Para sugerencias o consultas, puedes abrir un *issue* en este repositorio.
+**Antonella Ríos** — *Data & Analytics*  
+Para consultas técnicas o reportes, puedes abrir un *issue* en este repositorio.
