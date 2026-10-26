@@ -1,98 +1,158 @@
-[![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
 # Automated ETL Pipeline with Data Quality & Observability
 
+Pipeline ETL desarrollado en Python para ingerir datos transaccionales, validar su calidad antes de cargarlos en una base de datos relacional y registrar los resultados de cada ejecución. Los registros que no cumplen las reglas se aíslan en una cuarentena (*dead-letter queue*) junto con sus motivos de rechazo.
 
+[![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
 
-Pipeline ETL automatizado desarrollado en Python y SQL enfocado en ingesta controlada, validación estricta de calidad de datos (Data Quality), observabilidad de lotes y segregación de anomalías mediante colas de cuarentena (Dead Letter Queue).
+## Objetivo
 
-## 📌 Arquitectura y Flujo de Datos
+Demostrar un flujo ETL defensivo y reproducible: detectar problemas de calidad antes de la carga, conservar los datos rechazados para su análisis y dejar trazabilidad de cada lote procesado.
 
-    [Raw Ingestion / APIs] 
-              │
-              ▼
-    [Data Quality Engine] ──(Anomalías)──► [Quarantine / Dead Letter Queue]
-              │
-         (Aprobados)
-              ▼
-    [Warehouse Relacional] ◄──► [Auditoría & Observabilidad (SLA)]
+## Arquitectura y flujo de datos
 
-1. **Extract:** Ingesta de lotes transaccionales crudos (CSV / JSON / APIs).
-2. **Transform & Quality Gates:** Validación de integridad relacional y reglas de negocio en memoria vectorizada.
-3. **Dead Letter Queue:** Segregación de registros descartados con traza de motivos (`rejection_reasons`).
-4. **Load & SLA Monitoring:** Carga en tabla transaccional y registro de telemetría de ejecución en tabla de auditoría.
+    Fuente CSV/JSON o datos de prueba
+                    │
+                    ▼
+              Extracción
+                    │
+                    ▼
+       Validaciones de calidad ───────► Cuarentena / registros rechazados
+                    │                   con motivos de rechazo
+            Registros aprobados
+                    │
+                    ▼
+           Base de datos relacional
+                    │
+                    ▼
+           Tabla de auditoría del lote
 
----
+1. **Extract:** obtiene registros de entrada desde archivos o datos de prueba.
+2. **Transform & quality gates:** aplica reglas de integridad y negocio antes de cargar.
+3. **Quarantine:** aparta los registros inválidos y conserva el motivo del rechazo.
+4. **Load & audit:** carga los registros aprobados y registra métricas de ejecución.
 
-## 📋 Reglas de Calidad y Umbrales (Quality Gates)
+> Este repositorio utiliza datos sintéticos; no representa una integración activa con una API externa, salvo que se añada explícitamente una fuente de ese tipo.
 
-| Dimensión | Campo | Regla / Condición | Acción | Motivo en Cuarentena |
-| :--- | :--- | :--- | :--- | :--- |
-| **Integridad** | `transaction_id` | No nulo (`IS NOT NULL`) y único (`IS UNIQUE`) | Cuarentena | `ID_NULO` / `ID_DUPLICADO` |
-| **Completitud** | `customer_id` | Obligatorio (`IS NOT NULL`) | Cuarentena | `CLIENTE_FALTANTE` |
-| **Consistencia** | `amount` | Valor numérico mayor a 0 (`amount > 0`) | Cuarentena | `MONTO_INVALIDO` |
-| **Validez** | `status` | Pertenecer a `{'COMPLETED', 'PENDING', 'CANCELLED'}` | Cuarentena | `ESTADO_NO_PERMITIDO` |
+## Reglas de calidad
 
-### Definición de SLA y Alertas
-- **Umbral de Calidad (SLA Threshold):** **90%** de aprobación por lote.
-- **Manejo de Alertas:** Si un lote obtiene un pass rate menor al 90%, el sistema no frena el pipeline en seco para evitar bloqueos operativos, pero marca la ejecución como `WARNING_LOW_QUALITY` en `etl_audit_logs` y aísla los registros para remediación.
-- *Nota sobre el dataset sintético:* El script `generate_data.py` inyecta deliberadamente un 60% de errores para estresar el motor y comprobar que la alerta y la cuarentena funcionen correctamente.
+| Dimensión | Campo | Regla | Acción | Motivo registrado |
+|---|---|---|---|---|
+| Integridad | `transaction_id` | Obligatorio y único | Cuarentena | `ID_NULO` / `ID_DUPLICADO` |
+| Completitud | `customer_id` | Obligatorio | Cuarentena | `CLIENTE_FALTANTE` |
+| Consistencia | `amount` | Numérico y mayor que 0 | Cuarentena | `MONTO_INVALIDO` |
+| Validez | `status` | Debe ser `COMPLETED`, `PENDING` o `CANCELLED` | Cuarentena | `ESTADO_NO_PERMITIDO` |
 
----
+## Umbral, alertas y datos de prueba
 
-## 🧪 Cobertura de Pruebas Automatizadas (`pytest`)
+El umbral de aprobación configurado es **90% por lote**. Si la tasa de aprobación queda por debajo de ese valor, el pipeline registra el estado `WARNING_LOW_QUALITY` en la auditoría y conserva los registros inválidos en cuarentena, en vez de detener necesariamente todo el proceso.
 
-La suite de pruebas en `tests/test_quality.py` valida 4 escenarios críticos de forma aislada:
-1. `test_valid_record_passes`: Lotes íntegros con tasa de aprobación del 100%.
-2. `test_null_or_duplicated_transaction_id`: Detección simultánea de IDs nulos y claves duplicadas.
-3. `test_invalid_amount`: Filtrado de montos negativos y en cero.
-4. `test_invalid_status_and_missing_customer`: Validación de dominios categóricos permitidos y no nulidad de clientes.
+`generate_data.py` crea datos sintéticos con anomalías intencionales para probar las validaciones y el flujo de cuarentena. La proporción concreta de registros aprobados puede depender de los datos generados. La ejecución documentada abajo es un ejemplo, no una garantía de que todas las corridas produzcan exactamente los mismos conteos.
 
----
+## Evidencia de ejecución
 
-## 💡 Decisiones Técnicas y Escalabilidad
+Ejemplo de una corrida registrada en `etl_audit_logs`:
 
-- **Validación en memoria (Pandas vectorizado):** Se priorizó una implementación sin dependencias pesadas mediante operaciones booleanas vectorizadas sobre DataFrames. Permite procesar lotes de forma rápida sin sobrecargar la infraestructura. Para volúmenes superiores a decenas de gigabytes por lote, el motor puede transicionar a **PySpark** o **DuckDB**.
-- **SQLite vs. PostgreSQL:** Se utilizó SQLite mediante abstracción SQLAlchemy para garantizar reproducibilidad local y ejecución en CI sin dependencias externas de servidores. En un entorno de producción, la migración se realiza cambiando únicamente la variable de entorno `DATABASE_URL` hacia una instancia de **PostgreSQL** o **Azure SQL Database** (ver `.env.example`).
-- **Manejo de Reintentos y Fallas:** Si la fuente de datos falla en la extracción, el orquestador implementa salidas seguras sin comprometer el estado del warehouse; las transacciones fallidas quedan resguardadas en archivos timestamped en `data/rejected/` para reprocesamiento posterior.
-
----
-
-## 📊 Evidencia de Ejecución
-
-### Captura del Pipeline en Consola
-![Pipeline Execution](assets/pipeline_execution.png)
-
-### Registro en Base de Datos de Auditoría (`etl_audit_logs`)
-| run_id | pipeline_name | total_processed | valid_loaded | rejected_count | pass_rate_pct | status |
-| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
+| `run_id` | `pipeline_name` | `total_processed` | `valid_loaded` | `rejected_count` | `pass_rate_pct` | `status` |
+|---:|---|---:|---:|---:|---:|---|
 | 1 | `daily_transactions_ingestion` | 10 | 4 | 6 | 40.0 | `WARNING_LOW_QUALITY` |
 
----
+En este ejemplo, 4 de 10 registros fueron aprobados (40%), por debajo del umbral configurado de 90%; los otros 6 fueron rechazados y el lote quedó marcado con advertencia.
 
-## 🛠️ Tecnologías
+### Capturas
 
-- **Lenguaje:** Python 3.10+
-- **Procesamiento de Datos:** Pandas, NumPy
-- **Bases de Datos & ORM:** SQLAlchemy, SQLite (compatible con PostgreSQL / SQL Server)
-- **Testing & CI/CD:** Pytest, GitHub Actions
-- **Control de Versiones:** Git & GitHub
+Si las imágenes están en `assets/` y se llaman `console.png` y `audit_logs.png`, se mostrarán aquí. Si tienen otros nombres, modifica las rutas para que coincidan exactamente.
 
----
+![Salida de consola de una ejecución del pipeline](assets/console.png)
 
-## 🚀 Instalación y Uso
+![Filas registradas en la tabla de auditoría etl_audit_logs](assets/audit_logs.png)
 
-1. Clonar el repositorio:
-   git clone https://github.com/antonellarios/etl-data-quality-pipeline.git
-   cd etl-data-quality-pipeline
+## Pruebas automatizadas
 
-2. Configurar entorno y dependencias:
-   cp .env.example .env
-   python -m pip install -r requirements.txt
+Las pruebas se ejecutan con `pytest` y cubren cuatro escenarios:
 
-3. Ejecutar pruebas unitarias:
-   python -m pytest tests/ -v
+- `test_valid_record_passes`: un registro válido pasa las reglas.
+- `test_null_or_duplicated_transaction_id`: detecta identificadores nulos o duplicados.
+- `test_invalid_amount`: rechaza montos negativos o iguales a cero.
+- `test_invalid_status_and_missing_customer`: detecta estados no permitidos y clientes faltantes.
 
-4. Generar datos sintéticos y ejecutar el pipeline:
-   python generate_data.py
-   python main.py
-   python check_db.py
+GitHub Actions ejecuta las pruebas automáticamente en los eventos configurados en `.github/workflows/ci.yml`. La insignia al inicio del README muestra el resultado más reciente del workflow.
+
+## Decisiones técnicas
+
+- **Pandas vectorizado:** las reglas se aplican mediante operaciones sobre columnas y máscaras booleanas, evitando validar fila por fila en el flujo principal.
+- **SQLite y SQLAlchemy:** SQLite permite ejecutar el ejemplo localmente y en CI sin levantar un servidor de base de datos. SQLAlchemy proporciona una capa de acceso a datos.
+- **Escalabilidad:** este proyecto está pensado como demostración de procesamiento por lotes local. Para volúmenes que excedan la memoria disponible, habría que diseñar y probar una estrategia de procesamiento por particiones o una tecnología distribuida, como DuckDB o Spark, según el caso.
+- **Reintentos y recuperación:** los archivos en cuarentena sirven para inspeccionar y reprocesar registros rechazados. No se debe considerar que existe una política automática de reintentos de extracción salvo que esté implementada en el código.
+
+## Tecnologías
+
+- Python
+- Pandas y NumPy
+- SQLAlchemy y SQLite
+- pytest
+- GitHub Actions
+
+## Instalación y uso
+
+### Requisitos
+
+- Git
+- Python 3.10 o superior, en una versión compatible con las dependencias del proyecto.
+
+### Clonar el repositorio
+
+Windows PowerShell, macOS o Linux:
+
+    git clone https://github.com/antonellarios/etl-data-quality-pipeline.git
+    cd etl-data-quality-pipeline
+
+### Instalar dependencias
+
+En Windows PowerShell:
+
+    py -m pip install -r requirements.txt
+
+En macOS o Linux:
+
+    python3 -m pip install -r requirements.txt
+
+### Ejecutar las pruebas
+
+En Windows PowerShell:
+
+    py -m pytest -v
+
+En macOS o Linux:
+
+    python3 -m pytest -v
+
+### Generar datos y ejecutar el pipeline
+
+En Windows PowerShell:
+
+    py generate_data.py
+    py main.py
+    py check_db.py
+
+En macOS o Linux:
+
+    python3 generate_data.py
+    python3 main.py
+    python3 check_db.py
+
+`check_db.py` permite consultar los resultados persistidos, según la implementación actual del proyecto.
+
+## Configuración y seguridad
+
+El repositorio incluye `.env.example` como referencia de configuración. Copiarlo a `.env` solo es necesario si el código lee variables de entorno desde ese archivo. No subas credenciales, claves ni archivos `.env` con valores reales a GitHub. La base de datos configurada y las variables admitidas deben coincidir con lo que implementa el código.
+
+## Posibles mejoras
+
+- Añadir o ampliar casos de prueba para tipos incorrectos, umbrales y fallos de carga.
+- Incorporar capturas reales de la consola y de la tabla de auditoría.
+- Probar explícitamente una conexión a PostgreSQL antes de afirmar compatibilidad de producción.
+- Añadir alertas externas u orquestación programada si el alcance del proyecto lo requiere.
+
+## Autoría
+
+Proyecto personal de **Antonella Ríos**. Para sugerencias o consultas, puedes abrir un *issue* en este repositorio.
