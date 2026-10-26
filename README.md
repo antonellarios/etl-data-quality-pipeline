@@ -60,7 +60,6 @@ En este ejemplo, 4 de 10 registros fueron aprobados (40%), por debajo del umbral
 
 ### Capturas
 
-Si las imágenes están en `assets/` y se llaman `console.png` y `audit_logs.png`, se mostrarán aquí. Si tienen otros nombres, modifica las rutas para que coincidan exactamente.
 
 ![Salida de consola de una ejecución del pipeline](assets/console.png)
 
