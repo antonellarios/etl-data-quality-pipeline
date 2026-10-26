@@ -1,69 +1,120 @@
-import os
-import pandas as pd
-from datetime import datetime
+import logging
+import sys
+import time
+from pathlib import Path
+from uuid import uuid4
 
-from src.database import init_database, load_valid_records, log_pipeline_run
+import pandas as pd
+
+from src.database import init_database, load_and_audit
 from src.quality import DataQualityEngine
 
-SLA_PASS_RATE_THRESHOLD = 90.0
 
-def run_pipeline():
-    print("=" * 60)
-    print("INICIANDO PIPELINE ETL CON CONTROL DE CALIDAD Y AUDITORÍA")
-    print("=" * 60)
+PROJECT_ROOT = Path(__file__).resolve().parent
+INPUT_PATH = PROJECT_ROOT / "data" / "raw" / "transactions_raw.csv"
+REJECTED_DIR = PROJECT_ROOT / "data" / "rejected"
+QUALITY_GATE_THRESHOLD = 90.0
+PIPELINE_NAME = "daily_transactions_ingestion"
 
-    # 1. Inicializar esquema de Base de Datos
-    print("\n[1/5] Inicializando base de datos SQLite y tablas de auditoría...")
+logger = logging.getLogger(__name__)
+
+
+def run_pipeline(
+    input_path: Path = INPUT_PATH,
+    rejected_dir: Path = REJECTED_DIR,
+    quality_gate_threshold: float = QUALITY_GATE_THRESHOLD,
+) -> str:
+    """Run the local CSV ETL, quarantine rejected rows, and audit the batch.
+
+    Returns the batch status. Raises an exception if extraction, validation,
+    persistence, or audit logging fails so the process/CI can report failure.
+    """
+    run_id = str(uuid4())
+    started_at = time.perf_counter()
+
+    logger.info("run_id=%s event=pipeline_started input=%s", run_id, input_path)
+
+    if not input_path.is_file():
+        raise FileNotFoundError(f"No se encontró el archivo de origen: {input_path}")
+
+    logger.info("run_id=%s event=database_initialization_started", run_id)
     init_database()
 
-    # 2. Extracción (Ingesta desde data/raw)
-    raw_file_path = "data/raw/transactions_raw.csv"
-    if not os.path.exists(raw_file_path):
-        print(f"ERROR: No se encontró el archivo de origen en {raw_file_path}")
-        return
+    logger.info("run_id=%s event=extraction_started input=%s", run_id, input_path)
+    df_raw = pd.read_csv(input_path)
+    logger.info(
+        "run_id=%s event=extraction_completed total_records=%d",
+        run_id,
+        len(df_raw),
+    )
 
-    print(f"[2/5] Extrayendo datos crudos desde: {raw_file_path}")
-    df_raw = pd.read_csv(raw_file_path)
-    print(f"      Total de registros ingeridos: {len(df_raw)}")
-
-    # 3. Transformación y Validación (Motor de Data Quality)
-    print("[3/5] Ejecutando motor de validación de reglas de negocio...")
+    logger.info("run_id=%s event=validation_started", run_id)
     validator = DataQualityEngine(df_raw)
     df_valid, df_rejected, metrics = validator.run_validations()
 
-    print(f"      Registros limpios (aprobados): {metrics['valid_records']}")
-    print(f"      Registros anómalos (rechazados): {metrics['rejected_records']}")
-    print(f"      Tasa de aprobación (Pass Rate): {metrics['pass_rate_percentage']}%")
+    pass_rate = float(metrics["pass_rate_percentage"])
+    run_status = (
+        "SUCCESS"
+        if pass_rate >= quality_gate_threshold
+        else "WARNING_LOW_QUALITY"
+    )
 
-    # 4. Manejo de Datos Rechazados (Dead Letter Queue / Quarantine)
-    rejected_dir = "data/rejected"
-    os.makedirs(rejected_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    rejected_output_path = os.path.join(rejected_dir, f"quarantine_transactions_{timestamp}.csv")
-    
+    logger.info(
+        "run_id=%s event=validation_completed valid_records=%s "
+        "rejected_records=%s pass_rate_pct=%.2f status=%s",
+        run_id,
+        metrics["valid_records"],
+        metrics["rejected_records"],
+        pass_rate,
+        run_status,
+    )
+
+    rejected_dir.mkdir(parents=True, exist_ok=True)
+    rejected_output_path = rejected_dir / f"quarantine_transactions_{run_id}.csv"
     if not df_rejected.empty:
         df_rejected.to_csv(rejected_output_path, index=False)
-        print(f"[4/5] Registros rechazados aislados en: {rejected_output_path}")
+        logger.warning(
+            "run_id=%s event=quarantine_written rejected_records=%d path=%s",
+            run_id,
+            len(df_rejected),
+            rejected_output_path,
+        )
     else:
-        print("[4/5] Sin registros rechazados para aislar.")
+        logger.info("run_id=%s event=no_rejected_records", run_id)
 
-    # 5. Carga a SQL y Registro de Auditoría
-    print("[5/5] Cargando registros aprobados a la base de datos...")
-    load_valid_records(df_valid)
-
-    run_status = "SUCCESS" if metrics["pass_rate_percentage"] >= SLA_PASS_RATE_THRESHOLD else "WARNING_LOW_QUALITY"
-    
-    log_pipeline_run(
-        pipeline_name="daily_transactions_ingestion",
+    logger.info("run_id=%s event=load_started valid_records=%d", run_id, len(df_valid))
+    load_and_audit(
+        df_valid=df_valid,
+        pipeline_name=PIPELINE_NAME,
         metrics=metrics,
-        status=run_status
+        status=run_status,
     )
-    print(f"      Auditoría registrada en 'etl_audit_logs' con estado: {run_status}")
 
-    print("\n" + "=" * 60)
-    print(f"PIPELINE FINALIZADO CON ESTADO: {run_status}")
-    print("=" * 60)
+    elapsed_seconds = time.perf_counter() - started_at
+    logger.info(
+        "run_id=%s event=pipeline_completed status=%s elapsed_seconds=%.3f",
+        run_id,
+        run_status,
+        elapsed_seconds,
+    )
+    return run_status
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    try:
+        status = run_pipeline()
+    except Exception:
+        logger.exception("event=pipeline_failed")
+        return 1
+
+    logger.info("event=pipeline_finished status=%s", status)
+    return 0
+
 
 if __name__ == "__main__":
-    run_pipeline()
+    sys.exit(main())
