@@ -1,41 +1,43 @@
 # Pipeline ETL con Controles de Calidad de Datos y Registro de Auditoría
 
-Un pipeline por lotes (batch) desarrollado en Python que valida datos transaccionales antes de cargar los registros aprobados en una base de datos relacional. Las filas no válidas se aíslan en un archivo de cuarentena con motivos explícitos de rechazo, mientras que las métricas de calidad y el estado de cada ejecución quedan registrados para su posterior revisión.
+[![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Pandas](https://img.shields.io/badge/ETL-Pandas-150458)
+![Database](https://img.shields.io/badge/Database-SQLite-003B57)
 
-> **Alcance:** El flujo incluido procesa un archivo CSV local y utiliza datos sintéticos con fines demostrativos. No representa una integración activa con una API externa. El comportamiento con bases de datos depende de la configuración e implementación del repositorio.
+Un pipeline modular por lotes desarrollado en Python que valida datos transaccionales antes de su persistencia, enruta las filas rechazadas a una Cola de Mensajes Muertos (Dead Letter Queue / DLQ) y registra métricas de auditoría a nivel de lote. Está diseñado para visibilizar problemas en los datos antes de que impacten en tablas y reportes analíticos finales, conservando motivos explícitos de rechazo para su investigación.
 
-[![CI](BADGE_URL)](WORKFLOW_URL)
-*Reemplaza `BADGE_URL` y `WORKFLOW_URL` con los enlaces correspondientes de este repositorio, o elimina esta línea hasta que la integración continua (CI) esté configurada.*
+La demostración procesa un archivo CSV local en memoria mediante Pandas, persiste los registros aprobados y los datos de auditoría en SQLite a través de SQLAlchemy, y utiliza datos sintéticos para ejercitar las reglas de calidad.
 
 ---
 
-## Por qué este pipeline
+## Valor de negocio
 
-La entrada de datos con formato incorrecto puede introducir transacciones duplicadas, incompletas o no válidas en tablas y reportes analíticos finales. Este pipeline aplica controles explícitos de calidad antes de la carga, aísla los registros que requieren revisión y registra los resultados a nivel de lote para visibilizar las anomalías en lugar de dejarlas pasar de forma silenciosa.
+Registros de origen erróneos, incompletos o duplicados distorsionan los reportes operativos y financieros, además de consumir horas en tareas de investigación manual. Este pipeline establece una barrera explícita de control de calidad antes de la persistencia:
 
-Esta demo no pretende adjudicarse un ahorro financiero medido. Para una implementación con clientes reales, el impacto puede evaluarse frente a una línea de base como el tiempo dedicado a la limpieza manual, el conteo de filas rechazadas por regla, la frecuencia de incidentes recurrentes y el tiempo promedio de diagnóstico tras un lote fallido.
+- **Protección de datos aguas abajo:** los registros aprobados se segregan de aquellos que violan las reglas configuradas.
+- **Diagnóstico acelerado:** cada fila en cuarentena incluye motivos explícitos y trazables de rechazo.
+- **Trazabilidad integral:** cada lote registra el conteo de filas procesadas, válidas y rechazadas, junto con la tasa de aprobación y el estado de la ejecución.
+- **Operaciones reproducibles:** el mismo flujo de trabajo puede ejecutarse, probarse y versionarse consistentemente de manera local.
+
+En una implementación con clientes reales, el impacto operativo se mide a partir de líneas base acordadas: horas dedicadas a limpieza manual, volumen de filas rechazadas por regla, recurrencia de incidentes de datos y tiempo de diagnóstico ante lotes fallidos.
 
 ---
 
 ## Flujo de datos
 
-```text
-CSV local de transacciones
-           │
-           ▼
-     Extracción del lote
-           │
-           ▼
- Validación de reglas de negocio ───────► CSV de cuarentena
-           │                              (Motivos de rechazo explícitos)
-           ▼
-   Registros aprobados
-           │
-           ├────────────────────────────► Base de datos relacional
-           └────────────────────────────► Métricas de auditoría del lote
+```mermaid
+flowchart TD
+    A[CSV local de transacciones] --> B[Extracción del lote con Pandas]
+    B --> C[Validación de reglas vectorizadas]
+    C -->|Filas válidas| D[Carga en SQLite vía SQLAlchemy]
+    C -->|Filas rechazadas + motivos| E[CSV de cuarentena / DLQ]
+    D --> F[Registro de métricas de auditoría]
+    E --> F
+    F --> G[Revisión de estado y resultados]
 ```
 
-El script actual `main.py` lee `data/raw/transactions_raw.csv`. El flujo documentado utiliza una base de datos local según la configuración del módulo correspondiente. La ingesta de archivos JSON, APIs externas, orquestación programada, envío de alertas y procesamiento distribuido no están incluidos en esta demostración.
+La fuente de entrada, las reglas de calidad, la orquestación y la persistencia están desacopladas en componentes independientes. Este diseño mantiene la ejecución local simple y ofrece puntos de extensión claros para adaptar la fuente, las reglas o el destino según los requerimientos del flujo productivo.
 
 ---
 
@@ -45,60 +47,84 @@ El script actual `main.py` lee `data/raw/transactions_raw.csv`. El flujo documen
 | :--- | :--- | :--- | :--- | :--- |
 | **Integridad** | `transaction_id` | Obligatorio y único dentro del lote | Cuarentena | `ID_NULO`, `ID_DUPLICADO` |
 | **Completitud** | `customer_id` | Obligatorio | Cuarentena | `CLIENTE_FALTANTE` |
-| **Validez** | `amount` | Numérico y mayor a cero | Cuarentena | `MONTO_INVALIDO` |
-| **Validez de dominio** | `status` | Debe pertenecer a `COMPLETED`, `PENDING` o `CANCELLED` | Cuarentena | `ESTADO_NO_PERMITIDO` |
+| **Validez** | `amount` | Mayor a cero | Cuarentena | `MONTO_INVALIDO` |
+| **Validez de dominio** | `status` | Uno de `COMPLETED`, `PENDING`, `CANCELLED` | Cuarentena | `ESTADO_NO_PERMITIDO` |
 
-Todas las filas que contengan un `transaction_id` duplicado y no nulo se rechazan; el pipeline no selecciona arbitrariamente el "primer" registro. Una fila rechazada puede contener más de un motivo de rechazo simultáneo.
-
-*Alcance de validación:* Revisa cómo maneja el validador valores numéricos malformados (como cadenas de texto o valores infinitos) antes de asumir que dichos casos se descartan de forma segura.
+Cada fila involucrada en un `transaction_id` duplicado no nulo es rechazada en su totalidad, evitando la selección arbitraria de una "primera" ocurrencia. Un mismo registro puede acumular múltiples motivos de rechazo.
 
 ---
 
 ## Barrera de calidad (Quality Gate) y métricas de auditoría
 
-El umbral de aceptación del ejemplo está configurado en un 90% por lote. Cualquier ejecución por debajo de ese porcentaje se registra con el estado `WARNING_LOW_QUALITY`. En la implementación actual, esto opera como una advertencia en la auditoría; no bloquea automáticamente el proceso de carga.
+El umbral configurado de ejemplo exige un 90% de registros aprobados por lote. Cualquier lote por debajo de ese límite se clasifica como `WARNING_LOW_QUALITY`. En el flujo actual, opera como una advertencia en la auditoría sin bloquear la carga, permitiendo que la política de acción sea explícita y fácilmente configurable según el acuerdo operativo.
 
-Este umbral funciona como un parámetro operativo de control de calidad, no como un SLA contractual. En proyectos para clientes, debe acordarse previamente si un lote de baja calidad debe limitarse a una alerta, aislar el lote completo en cuarentena o abortar la carga.
+| Métrica | Significado |
+| :--- | :--- |
+| `total_records` | Total de filas de entrada evaluadas. |
+| `valid_records` | Filas que superaron todas las reglas de calidad configuradas. |
+| `rejected_records` | Filas derivadas a cuarentena. |
+| `pass_rate_percentage` | Porcentaje de filas aprobadas respecto del total evaluado. |
+| `status` | `SUCCESS` o `WARNING_LOW_QUALITY` en función del umbral configurado. |
 
-Las métricas de auditoría computan el total de registros procesados, válidos y rechazados, junto con el porcentaje de aprobación. Una corrida de ejemplo produce:
+Salida representativa de un lote sintético:
 
-| Pipeline | Total | Cargados | Rechazados | Tasa de aprobación | Estado |
+| Pipeline | Total | Válidos | Rechazados | Tasa de aprobación | Estado |
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | `daily_transactions_ingestion` | 10 | 4 | 6 | 40.0% | `WARNING_LOW_QUALITY` |
 
-*Esta salida es de carácter ilustrativo; los conteos finales dependen directamente de los datos procesados.*
+La tasa de aprobación se calcula estrictamente sobre los resultados de validación. Como la persistencia implementa `INSERT OR IGNORE`, el conteo de filas válidas debe interpretarse como registros aceptados por las pruebas de calidad, y no necesariamente como nuevas filas insertadas en la base de datos ante una reejecución.
 
 ---
 
 ## Cuarentena y recuperación
 
-Las filas rechazadas se exportan al directorio `data/rejected/` en un archivo con marca temporal bajo el patrón `quarantine_transactions_<timestamp>.csv`. El archivo incluye el campo `rejection_reasons` para facilitar la auditoría y corrección.
+Los registros rechazados se exportan al directorio `data/rejected/` bajo el formato `quarantine_transactions_<run_id>.csv`. El campo `rejection_reasons` documenta con precisión qué controles falló cada registro, permitiendo la inspección, corrección y posterior reprocesamiento controlado.
 
-El repositorio se enfoca en segregar registros defectuosos para su posterior análisis. No contempla reintentos automáticos ni flujos de reprocesamiento a menos que se implementen por separado.
+La cola de mensajes muertos (DLQ) funciona como un artefacto de revisión y recuperación. El reprocesamiento de filas corregidas se realiza actualizando la fuente y reejecutando el pipeline; los sistemas de reintento automatizado o programación de repeticiones constituyen flujos adicionales que pueden incorporarse modularmente según la necesidad.
 
 ---
 
-## Componentes del repositorio
+## Decisiones de arquitectura e ingeniería
 
-| Componente | Responsabilidad |
-| :--- | :--- |
-| `main.py` | Orquesta la inicialización de la base de datos, ingesta del CSV, validación, exportación a cuarentena, carga y registro de auditoría. |
-| `quality.py` | Aplica las reglas de validación vectorizadas en Pandas y calcula las métricas del lote. |
-| `tests/test_quality.py` | Prueba registros válidos y casos representativos de rechazo por cada regla. |
-| `generate_data.py` | Crea datos sintéticos de entrada con anomalías deliberadas. |
-| `check_db.py` | Consulta y expone los resultados persistidos en la base de datos. |
-| `.github/workflows/ci.yml` | Ejecuta las comprobaciones automáticas ante eventos configurados en GitHub Actions. |
+- **Procesamiento por lotes vectorizado:** Las máscaras booleanas vectorizadas de Pandas aplican las validaciones a nivel de columna completa, optimizando el rendimiento en memoria para lotes locales pequeños y medianos.
+- **Frontera explícita de calidad:** La segregación de registros erróneos antes de la inserción mitiga el riesgo de propagar inconsistencias a los modelos relacionales de destino.
+- **Persistencia relacional local desacoplada:** SQLite y SQLAlchemy ofrecen un entorno ligero y 100% reproducible localmente sin necesidad de desplegar un servidor dedicado.
+- **Carga y auditoría transaccional:** La inserción de filas aprobadas y el registro de métricas de auditoría comparten una misma transacción de base de datos a través de `load_and_audit()`. El archivo CSV de cuarentena se genera previamente, garantizando su preservación para análisis forense incluso si la persistencia falla.
+- **Ejecuciones trazables:** Cada ejecución recibe un identificador único `run_id` (UUID), presente en los logs operativos y en el nombre del archivo de cuarentena. La telemetría captura etapas del pipeline, volumetría de registros, estado y tiempos de ejecución.
+- **Fallas visibles en proceso:** Las excepciones se capturan en la frontera de ejecución y retornan códigos de salida distintos de cero (`exit code != 0`), permitiendo que el flujo de CI detecte y alerte fallos de inmediato.
+- **Validaciones testeables:** La suite de pruebas unitarias con pytest cubre el comportamiento central del motor; GitHub Actions ejecuta automáticamente las comprobaciones configuradas.
 
-*Verifica estas rutas y responsabilidades con tu repositorio local antes de publicar, especialmente si existen diferencias en la estructura de carpetas.*
+---
+
+## Estructura del repositorio
+
+```text
+.
+├── main.py
+├── generate_data.py
+├── check_db.py
+├── quality.py
+├── src/
+│   └── database.py
+├── tests/
+│   └── test_quality.py
+├── data/
+│   ├── raw/
+│   └── rejected/
+├── requirements.txt
+└── .github/
+    └── workflows/
+        └── ci.yml
+```
 
 ---
 
 ## Stack tecnológico
 
 - **Python 3.10+**
-- **Pandas:** Transformaciones por lotes y validaciones de calidad vectorizadas.
-- **SQLite y SQLAlchemy:** Según la configuración de la capa de persistencia.
-- **pytest:** Pruebas automatizadas.
+- **Pandas:** Transformaciones en memoria y validaciones vectorizadas por lotes.
+- **SQLAlchemy & SQLite:** Capa de persistencia relacional local desacoplada.
+- **pytest:** Pruebas unitarias automatizadas.
 - **GitHub Actions:** Integración continua (CI).
 
 ---
@@ -107,7 +133,7 @@ El repositorio se enfoca en segregar registros defectuosos para su posterior an�
 
 ### Requisitos previos
 - Git
-- Python 3.10 o superior (compatible con las dependencias del proyecto).
+- Python 3.10 o superior
 
 ### 1. Clonar el repositorio
 ```bash
@@ -122,19 +148,19 @@ cd etl-data-quality-pipeline
 py -m pip install -r requirements.txt
 ```
 
-**En macOS / Linux:**
+**En Linux / macOS:**
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-### 3. Ejecutar pruebas unitarias
+### 3. Ejecutar las pruebas unitarias
 
 **En Windows PowerShell:**
 ```powershell
 py -m pytest -v
 ```
 
-**En macOS / Linux:**
+**En Linux / macOS:**
 ```bash
 python3 -m pytest -v
 ```
@@ -148,58 +174,43 @@ py main.py
 py check_db.py
 ```
 
-**En macOS / Linux:**
+**En Linux / macOS:**
 ```bash
 python3 generate_data.py
 python3 main.py
 python3 check_db.py
 ```
 
-*Estos comandos asumen que los scripts y rutas de datos coinciden con la estructura del proyecto. Revisa el módulo de base de datos para confirmar la ubicación efectiva del archivo `.db` y los nombres de las tablas.*
+El script `generate_data.py` genera un conjunto de transacciones sintéticas con anomalías deliberadas. `main.py` valida el CSV, aísla los registros inválidos en el directorio de cuarentena, carga los registros limpios en la base de datos y registra la telemetría en la tabla de auditoría. `check_db.py` imprime los resultados persistidos en consola.
 
 ---
 
-## CI y pruebas automatizadas
+## Pruebas e integración continua (CI)
 
-La suite actual de pruebas cubre:
-- Registro válido superando todas las reglas.
-- Identificadores de transacción (`transaction_id`) nulos y duplicados.
-- Montos iguales a cero o negativos.
-- Estados categóricos no permitidos y clientes faltantes.
+La suite de pruebas cubre:
+- Validación exitosa de registros íntegros.
+- Aislamiento de identificadores de transacción nulos o duplicados.
+- Detección de montos negativos o en cero.
+- Rechazo de estados no permitidos y clientes faltantes.
 
-GitHub Actions ejecuta las comprobaciones descritas en `.github/workflows/ci.yml`. Añade la insignia de workflow correspondiente una vez confirmada la ruta y la rama predeterminada.
+GitHub Actions ejecuta las comprobaciones automáticas configuradas en `.github/workflows/ci.yml`.
 
-*Casos recomendados para ampliar la cobertura:* columnas faltantes en el origen, valores numéricos no finitos o con caracteres extraños, archivos de entrada vacíos, múltiples fallas simultáneas en un mismo registro, pruebas de rollback en la persistencia e idempotencia frente a reejecuciones.
-
----
-
-## Decisiones de ingeniería y alcance actual
-
-- **Validación vectorizada:** Las máscaras booleanas de Pandas aplican las reglas a nivel de columnas completas, evitando la iteración fila por fila en el flujo principal.
-- **Flujo de base de datos local:** SQLite permite correr la demostración localmente sin infraestructura adicional. Evita catalogar la capa de datos como apta para producción o compatible con PostgreSQL sin antes haber realizado las pruebas de integración correspondientes sobre esa base de datos de destino.
-- **Procesamiento por lotes:** La implementación actual carga el archivo CSV directamente en memoria. Cargas de trabajo de mayor escala requerirán estrategias de procesamiento por particiones (*chunking*) o motores distribuidos evaluados según el caso de uso.
-- **Control de fallos:** Conviene incorporar y validar logging estructurado, límites transaccionales de carga, mecanismos de rollback y códigos de salida (*exit codes*) consistentes antes de garantizar tolerancia total a fallos.
-- **Seguridad:** No incluyas credenciales reales, datos sensibles de clientes ni archivos `.env` completos en commits de Git. Documenta únicamente las variables de entorno que la aplicación consuma efectivamente.
+*Próximas incorporaciones prioritarias:* Validación ante columnas faltantes en origen, gestión explícita de valores numéricos no finitos (`NaN`, `inf`), detección de fuentes vacías, fallas múltiples simultáneas, pruebas de rollback en base de datos e idempotencia en reejecuciones.
 
 ---
 
-## Próximos pasos (Roadmap)
+## Roadmap
 
-- [ ] Validar explícitamente el esquema de entrada y casos de borde en datos numéricos.
-- [ ] Incorporar logging estructurado, identificadores de ejecución (`run_id`), métricas de duración y códigos de salida claros del proceso.
-- [ ] Definir comportamiento atómico para la carga/auditoría y reejecuciones idempotentes; probar rollback ante fallas parciales.
-- [ ] Configurar políticas flexibles para la barrera de calidad (advertir vs. bloquear la carga).
-- [ ] Sumar pruebas de integración y capturas de pantalla de ejecuciones reales.
-- [ ] Evaluar conectores hacia PostgreSQL, herramientas de orquestación, alertas externas o procesamiento distribuido cuando el caso de uso lo demande.
+- [ ] Ampliar la validación de esquemas y casos límite (gestión de cadenas alfanuméricas en campos numéricos y valores no finitos).
+- [ ] Desarrollar pruebas de integración dedicadas a escrituras en base de datos, comportamiento de rollback y reejecución de lotes.
+- [ ] Diferenciar en el reporte de persistencia las filas aprobadas por calidad de aquellas efectivamente insertadas vs. ignoradas.
+- [ ] Parametrizar la política de respuesta ante lotes degradados (advertir, aislar el lote completo o abortar la corrida).
+- [ ] Incorporar procesamiento por trozos (*chunking*) con Pandas si la volumetría de entrada supera la memoria RAM disponible.
+- [ ] Evaluar conectores hacia PostgreSQL, motores de orquestación, alertas externas o cómputo distribuido conforme la carga de trabajo justifique la complejidad operativa adicional.
 
 ---
 
 ## Autoría
 
-Proyecto desarrollado por **Antonella Ríos** para portafolio técnico. Para consultas, comentarios o sugerencias, abre un *issue* en este repositorio.
----
-
-## 👤 Autoría
-
-**Antonella Ríos** — *Data & Analytics*  
-Para consultas técnicas o reportes, puedes abrir un *issue* en este repositorio.
+Proyecto desarrollado por **Antonella Ríos** para portafolio técnico en Data & Analytics.  
+Para consultas, comentarios o sugerencias de mejora, abre un *issue* en este repositorio.
