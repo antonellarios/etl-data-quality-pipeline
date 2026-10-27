@@ -1,14 +1,40 @@
-# Entornos virtuales y caché de Python
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Variables de entorno y secretos
+.env
+
+# Caché de Python y compilados
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
-.env
+*.pyo
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Archivos de base de datos local generados por ejecución
 *.db
+*.sqlite
 *.sqlite3
 
-# Archivos transaccionales de prueba generados
+# Archivos de datos generados (ignora CSVs pero conserva las carpetas vía .gitkeep)
 data/raw/*.csv
 data/rejected/*.csv
+!data/raw/.gitkeep
+!data/rejected/.gitkeep
+
+# IDEs y editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
