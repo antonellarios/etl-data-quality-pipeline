@@ -142,37 +142,41 @@ git clone [https://github.com/antonellarios/etl-data-quality-pipeline.git](https
 cd etl-data-quality-pipeline
 ```
 
-### 2. Instalar dependencias
+### 2. Crear entorno virtual e instalar dependencias
 
 **En Windows PowerShell:**
 ```powershell
-py -m pip install -r requirements.txt
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
 **En Linux / macOS:**
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ### 3. Ejecutar las pruebas unitarias
 
 **En Windows PowerShell:**
 ```powershell
-py -m pytest -v
+pytest -v
 ```
 
 **En Linux / macOS:**
 ```bash
-python3 -m pytest -v
+pytest -v
 ```
 
 ### 4. Generar datos sintéticos y ejecutar el pipeline
 
 **En Windows PowerShell:**
 ```powershell
-py generate_data.py
-py main.py
-py check_db.py
+python generate_data.py
+python main.py
+python check_db.py
 ```
 
 **En Linux / macOS:**
@@ -183,7 +187,6 @@ python3 check_db.py
 ```
 
 El script `generate_data.py` genera un conjunto de transacciones sintéticas con anomalías deliberadas. `main.py` valida el CSV, aísla los registros inválidos en el directorio de cuarentena, carga los registros limpios en la base de datos y registra la telemetría en la tabla de auditoría. `check_db.py` imprime los resultados persistidos en consola.
-
 ---
 
 ## Pruebas e integración continua (CI)
