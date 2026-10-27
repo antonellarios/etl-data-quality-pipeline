@@ -103,20 +103,21 @@ La cola de mensajes muertos (DLQ) funciona como un artefacto de revisión y recu
 ├── main.py
 ├── generate_data.py
 ├── check_db.py
-├── quality.py
+├── pytest.ini
+├── requirements.txt
 ├── src/
-│   └── database.py
+│   ├── __init__.py
+│   ├── database.py
+│   └── quality.py
 ├── tests/
 │   └── test_quality.py
 ├── data/
 │   ├── raw/
 │   └── rejected/
-├── requirements.txt
 └── .github/
     └── workflows/
         └── ci.yml
 ```
-
 ---
 
 ## Stack tecnológico
