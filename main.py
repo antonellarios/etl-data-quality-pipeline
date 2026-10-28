@@ -19,6 +19,10 @@ PIPELINE_NAME = "daily_transactions_ingestion"
 logger = logging.getLogger(__name__)
 
 
+class PipelineInputError(Exception):
+    """Error esperado en la entrada: archivo ausente o vacío, esquema inválido o lote sin filas."""
+
+
 def run_pipeline(
     input_path: Path = INPUT_PATH,
     rejected_dir: Path = REJECTED_DIR,
@@ -26,8 +30,9 @@ def run_pipeline(
 ) -> str:
     """Run the local CSV ETL, quarantine rejected rows, and audit the batch.
 
-    Returns the batch status. Raises an exception if extraction, validation,
-    persistence, or audit logging fails so the process/CI can report failure.
+    Returns the batch status. Raises PipelineInputError for expected input
+    problems and propagates any other exception, so the process/CI can
+    report failure.
     """
     run_id = str(uuid4())
     started_at = time.perf_counter()
@@ -35,13 +40,26 @@ def run_pipeline(
     logger.info("run_id=%s event=pipeline_started input=%s", run_id, input_path)
 
     if not input_path.is_file():
-        raise FileNotFoundError(f"No se encontró el archivo de origen: {input_path}")
-
-    logger.info("run_id=%s event=database_initialization_started", run_id)
-    init_database()
+        raise PipelineInputError(f"No se encontró el archivo de origen: {input_path}")
 
     logger.info("run_id=%s event=extraction_started input=%s", run_id, input_path)
-    df_raw = pd.read_csv(input_path)
+    try:
+        df_raw = pd.read_csv(input_path)
+    except pd.errors.EmptyDataError as exc:
+        raise PipelineInputError(
+            f"El archivo de origen está vacío (sin encabezados ni filas): {input_path}"
+        ) from exc
+    except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+        raise PipelineInputError(
+            f"El archivo de origen no se pudo leer como CSV UTF-8 válido "
+            f"({exc.__class__.__name__}): {input_path}"
+        ) from exc
+
+    if df_raw.empty:
+        raise PipelineInputError(
+            f"El lote no contiene registros (0 filas): {input_path}"
+        )
+
     logger.info(
         "run_id=%s event=extraction_completed total_records=%d",
         run_id,
@@ -49,8 +67,11 @@ def run_pipeline(
     )
 
     logger.info("run_id=%s event=validation_started", run_id)
-    validator = DataQualityEngine(df_raw)
-    df_valid, df_rejected, metrics = validator.run_validations()
+    try:
+        validator = DataQualityEngine(df_raw)
+        df_valid, df_rejected, metrics = validator.run_validations()
+    except ValueError as exc:
+        raise PipelineInputError(f"Esquema de origen inválido: {exc}") from exc
 
     pass_rate = float(metrics["pass_rate_percentage"])
     run_status = (
@@ -82,6 +103,9 @@ def run_pipeline(
     else:
         logger.info("run_id=%s event=no_rejected_records", run_id)
 
+    logger.info("run_id=%s event=database_initialization_started", run_id)
+    init_database()
+
     logger.info("run_id=%s event=load_started valid_records=%d", run_id, len(df_valid))
     load_and_audit(
         df_valid=df_valid,
@@ -108,8 +132,11 @@ def main() -> int:
 
     try:
         status = run_pipeline()
+    except PipelineInputError as exc:
+        logger.error("event=pipeline_failed reason=invalid_input detail=%s", exc)
+        return 1
     except Exception:
-        logger.exception("event=pipeline_failed")
+        logger.exception("event=pipeline_failed reason=unexpected_error")
         return 1
 
     logger.info("event=pipeline_finished status=%s", status)
