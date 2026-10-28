@@ -1,7 +1,7 @@
 # Pipeline ETL con Controles de Calidad de Datos y Registro de Auditoría
 
 [![CI](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/antonellarios/etl-data-quality-pipeline/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 ![Pandas](https://img.shields.io/badge/ETL-Pandas-150458)
 ![Database](https://img.shields.io/badge/Database-SQLite-003B57)
 
@@ -74,6 +74,21 @@ Salida representativa de un lote sintético:
 
 La tasa de aprobación se calcula estrictamente sobre los resultados de validación. Como la persistencia implementa `INSERT OR IGNORE`, el conteo de filas válidas debe interpretarse como registros aceptados por las pruebas de calidad, y no necesariamente como nuevas filas insertadas en la base de datos ante una reejecución.
 
+### Salida real de ejecución (`check_db.py`)
+
+```text
+--- TABLA DE HECHOS (fact_transactions) ---
+  transaction_id customer_id transaction_date   amount     status            loaded_at
+0       TXN_1001     CUST_01       2026-10-20  15000.5  COMPLETED  2026-10-28 17:33:20
+1       TXN_1003     CUST_03       2026-10-21   2300.0    PENDING  2026-10-28 17:33:20
+2       TXN_1004     CUST_04       2026-10-21  45000.0  COMPLETED  2026-10-28 17:33:20
+3       TXN_1005     CUST_05       2026-10-21   1200.0  CANCELLED  2026-10-28 17:33:20
+
+--- TABLA DE AUDITORÍA (etl_audit_logs) ---
+   run_id                 pipeline_name          executed_at  ...  rejected_count  pass_rate_pct               status
+0       1  daily_transactions_ingestion  2026-10-28 17:33:20  ...               6           40.0  WARNING_LOW_QUALITY
+```
+
 > **Notas de persistencia y diseño:**
 > - **Idempotencia (`INSERT OR IGNORE`):** Las transacciones válidas se persisten manteniendo su marca de tiempo original (`loaded_at`). Las ejecuciones posteriores sobre transacciones ya procesadas preservan la integridad de la clave primaria sin generar duplicados.
 > - **Política de fallas en entrada:** Ante archivos vacíos (0 filas), encabezados faltantes o archivos corruptos/ilegibles (no UTF-8), el pipeline aborta de inmediato con código de salida `1` (`sys.exit(1)`) y registra el evento en los logs sin modificar el almacenamiento.
@@ -124,14 +139,16 @@ La cola de mensajes muertos (DLQ) funciona como un artefacto de revisión y recu
 └── .github/
     └── workflows/
         └── ci.yml
+```
+
 ---
 
 ## Stack tecnológico
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **Pandas:** Transformaciones en memoria y validaciones vectorizadas por lotes.
 - **SQLAlchemy & SQLite:** Capa de persistencia relacional local desacoplada.
-- **pytest:** Pruebas unitarias automatizadas.
+- **pytest:** Pruebas unitarias y de integración automatizadas.
 - **GitHub Actions:** Integración continua (CI).
 
 ---
@@ -140,9 +157,10 @@ La cola de mensajes muertos (DLQ) funciona como un artefacto de revisión y recu
 
 ### Requisitos previos
 - Git
-- Python 3.10 o superior
+- Python 3.11 o superior
 
 ### 1. Clonar el repositorio
+
 ```bash
 git clone [https://github.com/antonellarios/etl-data-quality-pipeline.git](https://github.com/antonellarios/etl-data-quality-pipeline.git)
 cd etl-data-quality-pipeline
@@ -193,26 +211,26 @@ python3 check_db.py
 ```
 
 El script `generate_data.py` genera un conjunto de transacciones sintéticas con anomalías deliberadas. `main.py` valida el CSV, aísla los registros inválidos en el directorio de cuarentena, carga los registros limpios en la base de datos y registra la telemetría en la tabla de auditoría. `check_db.py` imprime los resultados persistidos en consola.
+
 ---
 
 ## Pruebas e integración continua (CI)
 
-La suite de pruebas cubre:
+La suite de pruebas automatizadas incluye 21 tests que cubren:
 - Validación exitosa de registros íntegros.
 - Aislamiento de identificadores de transacción nulos o duplicados.
-- Detección de montos negativos o en cero.
+- Coerción segura y rechazo de montos inválidos (`<= 0`, cadenas alfanuméricas, `NaN`, `inf`, `-inf`).
 - Rechazo de estados no permitidos y clientes faltantes.
+- Comprobación estricta de esquemas y aborto controlado ante fuentes corruptas o vacías (`0 filas`).
 
-GitHub Actions ejecuta las comprobaciones automáticas configuradas en `.github/workflows/ci.yml`.
-
-*Próximas incorporaciones prioritarias:* Validación ante columnas faltantes en origen, gestión explícita de valores numéricos no finitos (`NaN`, `inf`), detección de fuentes vacías, fallas múltiples simultáneas, pruebas de rollback en base de datos e idempotencia en reejecuciones.
+GitHub Actions ejecuta automáticamente las comprobaciones configuradas en `.github/workflows/ci.yml` en cada push o pull request a `main`.
 
 ---
 
 ## Roadmap
 
-- [ ] Ampliar la validación de esquemas y casos límite (gestión de cadenas alfanuméricas en campos numéricos y valores no finitos).
-- [ ] Desarrollar pruebas de integración dedicadas a escrituras en base de datos, comportamiento de rollback y reejecución de lotes.
+- [x] Ampliar la validación de esquemas y casos límite (gestión de cadenas alfanuméricas en campos numéricos y valores no finitos).
+- [x] Desarrollar pruebas de integración dedicadas a entradas corruptas, codificaciones no soportadas y políticas de salida.
 - [ ] Diferenciar en el reporte de persistencia las filas aprobadas por calidad de aquellas efectivamente insertadas vs. ignoradas.
 - [ ] Parametrizar la política de respuesta ante lotes degradados (advertir, aislar el lote completo o abortar la corrida).
 - [ ] Incorporar procesamiento por trozos (*chunking*) con Pandas si la volumetría de entrada supera la memoria RAM disponible.
@@ -223,4 +241,4 @@ GitHub Actions ejecuta las comprobaciones automáticas configuradas en `.github/
 ## Autoría
 
 Proyecto desarrollado por **Antonella Ríos** para portafolio técnico en Data & Analytics.  
-Para consultas, comentarios o sugerencias de mejora, abre un *issue* en este repositorio.
+Para consultas, comentarios o sugerencias de mejora, abre un issue en este repositorio.
