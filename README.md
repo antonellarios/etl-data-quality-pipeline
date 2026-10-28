@@ -74,6 +74,10 @@ Salida representativa de un lote sintético:
 
 La tasa de aprobación se calcula estrictamente sobre los resultados de validación. Como la persistencia implementa `INSERT OR IGNORE`, el conteo de filas válidas debe interpretarse como registros aceptados por las pruebas de calidad, y no necesariamente como nuevas filas insertadas en la base de datos ante una reejecución.
 
+> **Notas de persistencia y diseño:**
+> - **Idempotencia (`INSERT OR IGNORE`):** Las transacciones válidas se persisten manteniendo su marca de tiempo original (`loaded_at`). Las ejecuciones posteriores sobre transacciones ya procesadas preservan la integridad de la clave primaria sin generar duplicados.
+> - **Política de fallas en entrada:** Ante archivos vacíos (0 filas), encabezados faltantes o archivos corruptos/ilegibles (no UTF-8), el pipeline aborta de inmediato con código de salida `1` (`sys.exit(1)`) y registra el evento en los logs sin modificar el almacenamiento.
+
 ---
 
 ## Cuarentena y recuperación
